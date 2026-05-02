@@ -6,6 +6,10 @@
 </head>
 <body>
     <p>说明：JS和WASM目录下的是MC移植网页版，biliplus开头的不用理</p>
+    <div>
+        <button onclick="goBack()" id="backBtn" style="display:none;">⬅ 返回上级</button>
+        <span id="currentPath" style="margin-left: 10px;">当前位置：/</span>
+    </div>
     <input type="text" id="filter" placeholder="筛选" onkeyup="filterList()">
     <div id="fileList">正在扫描...</div>
 
@@ -14,45 +18,151 @@
         const REPO_NAME = "husky1919.github.io";
         const BRANCH = "main";
 
-        async function fetchAllFiles() {
+        let allItems = [];      // 存储所有文件/文件夹的原始数据
+        let currentPath = "";   // 当前所在的目录路径（不以/开头，空字符串表示根目录）
+        let currentItems = [];   // 当前目录下的内容
+
+        async function fetchAllItems() {
             const url = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/git/trees/${BRANCH}?recursive=1`;
             try {
                 const res = await fetch(url);
                 const data = await res.json();
-                // 排除 biliplus 开头的文件（保留所有其他文件，不限制后缀）
-                const allFiles = data.tree.filter(item => {
+                // 过滤：排除 index.html 和 biliplus 开头的文件
+                allItems = data.tree.filter(item => {
                     const fileName = item.path.split('/').pop();
                     return item.path !== 'index.html' && !fileName.startsWith('biliplus');
                 });
-                displayList(allFiles.map(f => f.path));
+                // 进入根目录
+                navigateTo("");
             } catch (err) {
                 document.getElementById('fileList').innerHTML = '获取失败：' + err.message;
             }
         }
 
-        function displayList(files) {
+        // 导航到指定目录
+        function navigateTo(path) {
+            currentPath = path;
+            document.getElementById('currentPath').innerHTML = '当前位置：/' + (currentPath || '');
+            document.getElementById('backBtn').style.display = currentPath === "" ? "none" : "inline-block";
+            
+            // 找出当前目录下的所有直接子项
+            const children = [];
+            const subDirs = new Set();
+            
+            for (const item of allItems) {
+                const itemPath = item.path;
+                // 如果不是在当前目录下，跳过
+                if (currentPath !== "") {
+                    if (!itemPath.startsWith(currentPath + "/")) continue;
+                }
+                
+                // 获取相对路径
+                const relativePath = currentPath === "" ? itemPath : itemPath.substring(currentPath.length + 1);
+                
+                // 如果还有斜杠，说明是子目录中的文件，取第一级目录名
+                if (relativePath.includes("/")) {
+                    const dirName = relativePath.split("/")[0];
+                    if (!subDirs.has(dirName)) {
+                        subDirs.add(dirName);
+                        children.push({
+                            type: "dir",
+                            name: dirName,
+                            path: currentPath === "" ? dirName : currentPath + "/" + dirName
+                        });
+                    }
+                } else {
+                    // 当前目录下的文件
+                    children.push({
+                        type: "file",
+                        name: relativePath,
+                        path: itemPath
+                    });
+                }
+            }
+            
+            // 去重：同一个文件夹只显示一次（上面用Set已经处理了）
+            const uniqueChildren = [];
+            const seenNames = new Set();
+            for (const child of children) {
+                if (!seenNames.has(child.name)) {
+                    seenNames.add(child.name);
+                    uniqueChildren.push(child);
+                }
+            }
+            
+            // 排序：文件夹在前，文件在后
+            uniqueChildren.sort((a, b) => {
+                if (a.type !== b.type) {
+                    return a.type === "dir" ? -1 : 1;
+                }
+                return a.name.localeCompare(b.name);
+            });
+            
+            currentItems = uniqueChildren;
+            displayList();
+        }
+
+        function displayList() {
             const container = document.getElementById('fileList');
-            if (files.length === 0) {
-                container.innerHTML = '没有找到其他文件';
+            if (currentItems.length === 0) {
+                container.innerHTML = '📭 此文件夹为空';
                 return;
             }
-            container.innerHTML = files.map(file => '<a href="' + file + '" target="_blank">' + file + '</a><br>').join('');
+            
+            container.innerHTML = currentItems.map(item => {
+                if (item.type === "dir") {
+                    return '<div><a href="#" onclick="enterDir(\'' + escapePath(item.path) + '\'); return false;">📁 ' + item.name + '</a></div>';
+                } else {
+                    return '<div><a href="' + item.path + '" target="_blank">📄 ' + item.name + '</a></div>';
+                }
+            }).join('');
+            
+            // 如果之前有筛选关键词，重新应用筛选
+            const keyword = document.getElementById('filter').value.toLowerCase();
+            if (keyword) {
+                applyFilter(keyword);
+            }
+        }
+
+        function enterDir(path) {
+            navigateTo(path);
+        }
+
+        function goBack() {
+            if (currentPath === "") return;
+            const lastSlash = currentPath.lastIndexOf("/");
+            const parentPath = lastSlash === -1 ? "" : currentPath.substring(0, lastSlash);
+            navigateTo(parentPath);
+        }
+
+        function escapePath(path) {
+            return path.replace(/'/g, "\\'");
         }
 
         function filterList() {
             const keyword = document.getElementById('filter').value.toLowerCase();
-            const links = document.querySelectorAll('#fileList a');
-            for (let i = 0; i < links.length; i++) {
-                const link = links[i];
-                if (link.textContent.toLowerCase().indexOf(keyword) !== -1) {
-                    link.style.display = '';
+            applyFilter(keyword);
+        }
+
+        function applyFilter(keyword) {
+            const containers = document.querySelectorAll('#fileList > div');
+            if (!keyword) {
+                for (let i = 0; i < containers.length; i++) {
+                    containers[i].style.display = '';
+                }
+                return;
+            }
+            for (let i = 0; i < containers.length; i++) {
+                const text = containers[i].innerText.toLowerCase();
+                if (text.indexOf(keyword) !== -1) {
+                    containers[i].style.display = '';
                 } else {
-                    link.style.display = 'none';
+                    containers[i].style.display = 'none';
                 }
             }
         }
 
-        fetchAllFiles();
+        fetchAllItems();
     </script>
 </body>
 </html>
